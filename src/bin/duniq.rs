@@ -1,11 +1,11 @@
 use std::io::BufRead;
 
 use ahash::AHashMap;
-use clap::Clap;
+use clap::Parser;
 
 use dtools::AnyResult;
 
-#[derive(Debug, Clap)]
+#[derive(Debug, Parser)]
 struct Command {
     /// prefix lines by the number of occurrences
     #[clap(short, long)]
@@ -13,7 +13,7 @@ struct Command {
 }
 
 fn main() -> AnyResult {
-    let cmd: Command = Clap::parse();
+    let cmd: Command = Parser::parse();
 
     let print_count = if cmd.count { 0 } else { 1 };
 
