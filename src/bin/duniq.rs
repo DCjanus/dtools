@@ -1,4 +1,5 @@
 use std::io::BufRead;
+use std::io::Write;
 
 use ahash::AHashMap;
 use clap::Parser;
@@ -17,6 +18,7 @@ fn main() -> AnyResult {
 
     let print_count = if cmd.count { 0 } else { 1 };
 
+    let mut o = std::io::BufWriter::new(std::io::stdout());
     let mut counter: AHashMap<_, u64> = Default::default();
     for line in std::io::stdin().lock().lines() {
         let line = match line {
@@ -29,15 +31,16 @@ fn main() -> AnyResult {
         *count += 1;
 
         if *count == print_count {
-            print!("{}\n", line.as_str());
+            writeln!(o, "{}", line.as_str())?;
         }
     }
 
     if cmd.count {
         for (k, v) in counter.iter() {
-            print!("{:>8} {}\n", v, k.as_str());
+            writeln!(o, "{:>8} {}", v, k.as_str())?;
         }
     }
+    o.flush()?;
 
     Ok(())
 }
