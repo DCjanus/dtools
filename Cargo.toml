@@ -2,11 +2,11 @@
 name = "dtools"
 version = "0.1.0"
 authors = ["DCjanus <DCjanus@dcjanus.com>"]
-edition = "2018"
-
+edition = "2024"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
 ahash = "0.8.8"
 anyhow = "1.0.79"
 clap = { version = "4.5.1", features = ["derive"] }
+size = "0.5.0"
