@@ -42,9 +42,9 @@
 
 用于在交互式 TUI 中审计并删除 linked worktree。界面会展示 main worktree 和全部已注册的 linked worktree，以及各自的路径、branch、HEAD、工作区状态、相对默认基准 branch 的吸收判断与 diff 统计。
 
-main worktree、当前运行命令所在的 worktree、通过 `git worktree lock` 锁定的 worktree，以及存在已跟踪或未跟踪改动的 worktree会显示为锁定状态，不能选择。路径已经丢失的 worktree 可以选择，确认后会清理其注册信息。删除通过不带 `--force` 的 `git worktree remove` 执行，并在操作前重新审计保护状态；对应的 local branch 会保留，可再使用 `dcx git branch cleanup` 独立审计和删除。
+main worktree、当前运行命令所在的 worktree、通过 `git worktree lock` 锁定的 worktree，以及存在已跟踪或未跟踪改动的 worktree会显示为锁定状态，不能选择。路径已经丢失的 worktree 可以选择，确认后会清理其注册信息。删除前会重新审计保护状态；默认执行 `git worktree remove`，包含已初始化 submodule 时可在 TUI 中勾选强制删除，改用 `git worktree remove --force`。强制模式不会绕过上述硬保护。对应的 local branch 会保留，可再使用 `dcx git branch cleanup` 独立审计和删除。
 
-操作方式与 branch cleanup 一致：使用方向键移动、空格选择、`a` 全选可删除项、`x` 清空选择；按回车查看最终删除清单，再次按下回车才执行。
+操作方式与 branch cleanup 一致：使用方向键移动、空格选择、`a` 全选可删除项、`x` 清空选择；按 `f` 勾选或取消强制删除。按回车查看最终删除清单，再次按下回车才执行。
 
 ### `dcx cargo cleanup`
 

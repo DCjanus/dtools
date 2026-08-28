@@ -24,7 +24,13 @@ use crate::git::{BaseAudit, DeleteKind, WorktreeAudit, WorktreeProtection, Workt
 
 type Tui = Terminal<CrosstermBackend<Stderr>>;
 
-pub(crate) fn select_worktrees(worktrees: Vec<WorktreeAudit>) -> AnyResult<Vec<PathBuf>> {
+#[derive(Debug, Default)]
+pub(crate) struct WorktreeSelection {
+    pub(crate) paths: Vec<PathBuf>,
+    pub(crate) force: bool,
+}
+
+pub(crate) fn select_worktrees(worktrees: Vec<WorktreeAudit>) -> AnyResult<WorktreeSelection> {
     let mut terminal = start_terminal()?;
     let _guard = TerminalGuard;
     let mut app = App::new(worktrees);
@@ -41,8 +47,13 @@ pub(crate) fn select_worktrees(worktrees: Vec<WorktreeAudit>) -> AnyResult<Vec<P
         }
         match app.handle_key(key) {
             Outcome::Continue => {}
-            Outcome::Cancel => return Ok(Vec::new()),
-            Outcome::Remove => return Ok(app.selected.into_iter().collect()),
+            Outcome::Cancel => return Ok(WorktreeSelection::default()),
+            Outcome::Remove => {
+                return Ok(WorktreeSelection {
+                    paths: app.selected.into_iter().collect(),
+                    force: app.force,
+                });
+            }
         }
     }
 }
@@ -95,6 +106,7 @@ struct App {
     selected: BTreeSet<PathBuf>,
     cursor: usize,
     confirming: bool,
+    force: bool,
 }
 
 impl App {
@@ -104,6 +116,7 @@ impl App {
             selected: BTreeSet::new(),
             cursor: 0,
             confirming: false,
+            force: false,
         }
     }
 
@@ -115,6 +128,10 @@ impl App {
         if self.confirming {
             return match key.code {
                 KeyCode::Enter => Outcome::Remove,
+                KeyCode::Char('f') => {
+                    self.force = !self.force;
+                    Outcome::Continue
+                }
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.confirming = false;
                     Outcome::Continue
@@ -159,6 +176,10 @@ impl App {
             }
             KeyCode::Char('x') => {
                 self.selected.clear();
+                Outcome::Continue
+            }
+            KeyCode::Char('f') => {
+                self.force = !self.force;
                 Outcome::Continue
             }
             KeyCode::Enter if !self.selected.is_empty() => {
@@ -429,6 +450,12 @@ fn render_footer(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         Span::raw("全选  "),
         Span::styled(" x ", key_style()),
         Span::raw("清空  "),
+        Span::styled(" f ", key_style()),
+        Span::raw(if app.force {
+            "[x] 强制  "
+        } else {
+            "[ ] 强制  "
+        }),
         Span::styled(" Enter ", key_style()),
         Span::raw(format!("{enter}  ")),
         Span::styled(" q ", key_style()),
@@ -461,7 +488,7 @@ fn render_confirmation(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
         ),
         Line::raw(""),
     ];
-    let limit = popup.height.saturating_sub(9) as usize;
+    let limit = popup.height.saturating_sub(11) as usize;
     for path in app.selected.iter().take(limit) {
         lines.push(Line::raw(format!("  • {}", path.display())));
     }
@@ -474,6 +501,26 @@ fn render_confirmation(frame: &mut ratatui::Frame<'_>, area: Rect, app: &App) {
     }
     lines.extend([
         Line::raw(""),
+        Line::from(vec![
+            Span::styled(" f ", key_style()),
+            Span::raw(if app.force {
+                "[x] 强制删除（使用 git worktree remove --force）"
+            } else {
+                "[ ] 强制删除"
+            }),
+        ]),
+        Line::styled(
+            if app.force {
+                "强制模式可删除含 submodule 的 worktree；硬保护项仍不会删除。"
+            } else {
+                "含 submodule 的 worktree 可能需要勾选强制删除。"
+            },
+            Style::default().fg(if app.force {
+                Color::LightRed
+            } else {
+                Color::Yellow
+            }),
+        ),
         Line::styled(
             "目录与 worktree 注册信息会被删除；对应 local branch 会保留。",
             Style::default().fg(Color::Yellow),
@@ -552,6 +599,21 @@ mod tests {
             Outcome::Continue
         );
         assert!(app.confirming);
+        assert_eq!(
+            app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            Outcome::Remove
+        );
+    }
+
+    #[test]
+    fn force_removal_must_be_explicitly_toggled() {
+        let mut app = App::new(vec![worktree("/topic", None)]);
+        app.handle_key(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert!(!app.force);
+        app.handle_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE));
+        assert!(app.force);
         assert_eq!(
             app.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             Outcome::Remove

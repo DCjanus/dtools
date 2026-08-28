@@ -34,7 +34,8 @@ description: 使用 dcx CLI 处理 UTF-8 文本、执行无序去重、查看 JW
 - 使用 `dcx git worktree cleanup` 打开交互式 TUI，由用户审计并明确选择要删除的 linked worktree。
 - main worktree、当前 worktree、通过 Git 锁定或存在本地改动的 worktree 会被硬保护，无法选择；路径已丢失的注册信息可以选择清理。
 - 选择完成后还会显示最终确认清单；不要代替用户操作 TUI 或绕过确认。
-- 删除不使用 `--force`，且只删除 worktree 目录与注册信息；对应 local branch 会保留，需要时再用 branch cleanup 独立审计。
+- 默认删除不使用 `--force`；如果 Git 因 worktree 包含已初始化 submodule 而拒绝删除，用户可在 TUI 中勾选强制删除。强制模式不会绕过 main、当前、locked 或 dirty worktree 的硬保护。
+- 删除只影响 worktree 目录与注册信息；对应 local branch 会保留，需要时再用 branch cleanup 独立审计。
 
 ## Cargo target 缓存清理
 

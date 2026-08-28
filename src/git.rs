@@ -125,13 +125,14 @@ pub fn worktree_cleanup() -> AnyResult {
 
     let repo = discover_repository()?;
     let audits = worktree_audits(&repo)?;
-    let selected = crate::git_worktree_cleanup_tui::select_worktrees(audits)?;
-    if selected.is_empty() {
+    let selection = crate::git_worktree_cleanup_tui::select_worktrees(audits)?;
+    if selection.paths.is_empty() {
         return Ok(());
     }
-    remove_selected_worktrees(&repo, &selected)?;
-    println!("Removed {} linked worktrees:", selected.len());
-    for path in selected {
+    remove_selected_worktrees(&repo, &selection.paths, selection.force)?;
+    let mode = if selection.force { " with force" } else { "" };
+    println!("Removed {} linked worktrees{mode}:", selection.paths.len());
+    for path in selection.paths {
         println!("  {}", path.display());
     }
     Ok(())
@@ -267,7 +268,7 @@ fn worktree_is_dirty(path: &Path) -> AnyResult<bool> {
     Ok(!output.stdout.is_empty())
 }
 
-fn remove_selected_worktrees(repo: &Repository, paths: &[PathBuf]) -> AnyResult {
+fn remove_selected_worktrees(repo: &Repository, paths: &[PathBuf], force: bool) -> AnyResult {
     let audits = worktree_audits(repo)?;
     for path in paths {
         let audit = audits
@@ -295,10 +296,16 @@ fn remove_selected_worktrees(repo: &Repository, paths: &[PathBuf]) -> AnyResult 
         .workdir()
         .context("worktree cleanup requires a non-bare main repository")?;
     for path in paths {
-        let output = Command::new("git")
+        let mut command = Command::new("git");
+        command
             .arg("-C")
             .arg(main_path)
-            .args(["worktree", "remove", "--"])
+            .args(["worktree", "remove"]);
+        if force {
+            command.arg("--force");
+        }
+        let output = command
+            .arg("--")
             .arg(path)
             .output()
             .with_context(|| format!("failed to remove worktree at {}", path.display()))?;
@@ -963,6 +970,11 @@ mod tests {
         assert_eq!(dirty_audit.state, WorktreeState::Dirty);
         assert_eq!(dirty_audit.protection, Some(WorktreeProtection::Dirty));
 
+        let error =
+            remove_selected_worktrees(&repo, std::slice::from_ref(&dirty), true).unwrap_err();
+        assert!(error.to_string().contains("worktree has local changes"));
+        assert!(dirty.exists());
+
         git(
             &main,
             &[
@@ -1009,7 +1021,7 @@ mod tests {
         );
 
         let repo = gix::open(&main).unwrap();
-        remove_selected_worktrees(&repo, std::slice::from_ref(&linked)).unwrap();
+        remove_selected_worktrees(&repo, std::slice::from_ref(&linked), false).unwrap();
 
         assert!(!linked.exists());
         assert!(repo.worktrees().unwrap().is_empty());
@@ -1028,6 +1040,7 @@ mod tests {
         let error = remove_selected_worktrees(
             &repo,
             std::slice::from_ref(&root.path().canonicalize().unwrap()),
+            false,
         )
         .unwrap_err();
 
@@ -1070,7 +1083,7 @@ mod tests {
         assert!(linked_audit.protection.is_none());
         let registered_path = linked_audit.path.clone();
 
-        remove_selected_worktrees(&repo, std::slice::from_ref(&registered_path)).unwrap();
+        remove_selected_worktrees(&repo, std::slice::from_ref(&registered_path), false).unwrap();
 
         assert!(moved.exists());
         assert!(repo.worktrees().unwrap().is_empty());
@@ -1079,5 +1092,74 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn removes_a_clean_linked_worktree_containing_an_initialized_submodule() {
+        let root = tempfile::tempdir().unwrap();
+        let submodule = root.path().join("submodule");
+        let main = root.path().join("main");
+        let linked = root.path().join("topic");
+        fs::create_dir(&submodule).unwrap();
+        fs::create_dir(&main).unwrap();
+
+        git(&submodule, &["init", "--quiet", "--initial-branch=main"]);
+        git(&submodule, &["config", "user.name", "Test User"]);
+        git(&submodule, &["config", "user.email", "test@example.com"]);
+        fs::write(submodule.join("file.txt"), "submodule\n").unwrap();
+        git(&submodule, &["add", "file.txt"]);
+        git(&submodule, &["commit", "--quiet", "-m", "base"]);
+
+        git(&main, &["init", "--quiet", "--initial-branch=main"]);
+        git(&main, &["config", "user.name", "Test User"]);
+        git(&main, &["config", "user.email", "test@example.com"]);
+        fs::write(main.join("file.txt"), "base\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "--quiet", "-m", "base"]);
+        git(
+            &main,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--quiet",
+                submodule.to_str().unwrap(),
+                "dependency",
+            ],
+        );
+        git(&main, &["commit", "--quiet", "-am", "add submodule"]);
+        git(&main, &["branch", "topic"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked.to_str().unwrap(),
+                "topic",
+            ],
+        );
+        git(
+            &linked,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ],
+        );
+
+        let repo = gix::open(&main).unwrap();
+        let error =
+            remove_selected_worktrees(&repo, std::slice::from_ref(&linked), false).unwrap_err();
+        assert!(error.to_string().contains("containing submodules"));
+        assert!(linked.exists());
+
+        remove_selected_worktrees(&repo, std::slice::from_ref(&linked), true).unwrap();
+
+        assert!(!linked.exists());
     }
 }
