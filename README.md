@@ -14,7 +14,7 @@
 
 用于不依赖预排序的全局去重，避免经典 `sort | uniq` 流程中额外的排序开销。
 
-### `dcx git cleanup`
+### `dcx git branch cleanup`
 
 用于在交互式 TUI 中审计并批量删除本地 branch。界面默认显示全部本地 branch，可按 `g` 切换为只看 upstream 已消失的 branch；左侧独立展示“正常”“丢失”或“未设”跟踪状态，以及“已合并”“等价”“待复核”或“锁定”审计状态。使用方向键移动、空格选择，右侧展示 upstream、保护状态、最后提交、相对审计 base 的领先/落后提交数、内容吸收判断与 diff 统计。按回车后会显示最终删除清单，再次回车才通过 `gix` 事务删除本地 ref。
 
@@ -34,9 +34,17 @@
 | `Enter` | 查看删除确认；确认页再次按下后执行 |
 | `Esc` / `q` | 返回或退出 |
 
-需要刷新远端 refs 时显式使用 `dcx git cleanup --update`；只有这个显式网络操作仍会调用 `git fetch --all --prune`。使用 `dcx git cleanup exclude add|remove|list` 管理仓库级硬保护规则。
+需要刷新远端 refs 时显式使用 `dcx git branch cleanup --update`；只有这个显式网络操作仍会调用 `git fetch --all --prune`。使用 `dcx git branch cleanup exclude add|remove|list` 管理仓库级硬保护规则。
 
-> **Breaking change：** 原 `dcx git branches` 已移除，不提供兼容 alias；请改用 `dcx git cleanup`。现有 exclude 规则继续生效，管理命令迁移为 `dcx git cleanup exclude add|remove|list`。
+> **Breaking change：** 原 `dcx git cleanup` 已移除，不提供兼容 alias；请改用 `dcx git branch cleanup`。现有 exclude 规则继续生效，管理命令迁移为 `dcx git branch cleanup exclude add|remove|list`。
+
+### `dcx git worktree cleanup`
+
+用于在交互式 TUI 中审计并删除 linked worktree。界面会展示 main worktree 和全部已注册的 linked worktree，以及各自的路径、branch、HEAD、工作区状态、相对默认基准 branch 的吸收判断与 diff 统计。
+
+main worktree、当前运行命令所在的 worktree、通过 `git worktree lock` 锁定的 worktree，以及存在已跟踪或未跟踪改动的 worktree会显示为锁定状态，不能选择。路径已经丢失的 worktree 可以选择，确认后会清理其注册信息。删除通过不带 `--force` 的 `git worktree remove` 执行，并在操作前重新审计保护状态；对应的 local branch 会保留，可再使用 `dcx git branch cleanup` 独立审计和删除。
+
+操作方式与 branch cleanup 一致：使用方向键移动、空格选择、`a` 全选可删除项、`x` 清空选择；按回车查看最终删除清单，再次按下回车才执行。
 
 ### `dcx cargo cleanup`
 

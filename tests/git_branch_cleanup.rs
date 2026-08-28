@@ -5,12 +5,12 @@ use std::fs;
 use common::{dcx, init_repository};
 
 #[test]
-fn cleanup_help_exposes_only_the_interactive_workflow() {
+fn branch_cleanup_help_exposes_only_the_interactive_workflow() {
     let root = tempfile::tempdir().unwrap();
     let skills = root.path().join("skills");
 
     let output = dcx(&skills)
-        .args(["git", "cleanup", "--help"])
+        .args(["git", "branch", "cleanup", "--help"])
         .output()
         .unwrap();
 
@@ -23,12 +23,12 @@ fn cleanup_help_exposes_only_the_interactive_workflow() {
 }
 
 #[test]
-fn legacy_branches_command_is_not_available() {
+fn legacy_cleanup_command_is_not_available() {
     let root = tempfile::tempdir().unwrap();
     let skills = root.path().join("skills");
 
     let output = dcx(&skills)
-        .args(["git", "branches", "--help"])
+        .args(["git", "cleanup", "--help"])
         .output()
         .unwrap();
 
@@ -36,12 +36,12 @@ fn legacy_branches_command_is_not_available() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("unrecognized subcommand 'branches'")
+            .contains("unrecognized subcommand 'cleanup'")
     );
 }
 
 #[test]
-fn cleanup_requires_an_interactive_terminal() {
+fn branch_cleanup_requires_an_interactive_terminal() {
     let root = tempfile::tempdir().unwrap();
     let repository = root.path().join("repository");
     let skills = root.path().join("skills");
@@ -50,7 +50,7 @@ fn cleanup_requires_an_interactive_terminal() {
 
     let output = dcx(&skills)
         .current_dir(&repository)
-        .args(["git", "cleanup"])
+        .args(["git", "branch", "cleanup"])
         .output()
         .unwrap();
 
@@ -72,14 +72,22 @@ fn manages_repository_local_exclude_patterns() {
 
     let add = dcx(&skills)
         .current_dir(&repository)
-        .args(["git", "cleanup", "exclude", "add", "release/*", "develop"])
+        .args([
+            "git",
+            "branch",
+            "cleanup",
+            "exclude",
+            "add",
+            "release/*",
+            "develop",
+        ])
         .output()
         .unwrap();
     assert!(add.status.success());
 
     let list = dcx(&skills)
         .current_dir(&repository)
-        .args(["git", "cleanup", "exclude", "list"])
+        .args(["git", "branch", "cleanup", "exclude", "list"])
         .output()
         .unwrap();
     assert!(list.status.success());
@@ -94,7 +102,7 @@ fn manages_repository_local_exclude_patterns() {
 
     let remove = dcx(&skills)
         .current_dir(&repository)
-        .args(["git", "cleanup", "exclude", "remove", "develop"])
+        .args(["git", "branch", "cleanup", "exclude", "remove", "develop"])
         .output()
         .unwrap();
     assert!(remove.status.success());
