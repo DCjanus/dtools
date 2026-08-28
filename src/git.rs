@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, IsTerminal, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, bail};
@@ -60,13 +60,41 @@ pub(crate) struct BranchAudit {
     pub(crate) bases: Vec<BaseAudit>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct WorktreeAudit {
+    pub(crate) path: PathBuf,
+    pub(crate) branch: String,
+    pub(crate) short_object: String,
+    pub(crate) state: WorktreeState,
+    pub(crate) protection: Option<WorktreeProtection>,
+    pub(crate) subject: String,
+    pub(crate) diff_base: String,
+    pub(crate) diffstat: String,
+    pub(crate) bases: Vec<BaseAudit>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WorktreeState {
+    Clean,
+    Dirty,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum WorktreeProtection {
+    Main,
+    Current,
+    Locked(String),
+    Dirty,
+}
+
 #[derive(Debug, Default)]
 struct ExcludeConfig {
     comments: Vec<String>,
     patterns: BTreeSet<String>,
 }
 
-pub fn cleanup(update: bool) -> AnyResult {
+pub fn branch_cleanup(update: bool) -> AnyResult {
     let mut repo = discover_repository()?;
     if update {
         // Fetch remains an explicit network operation. All local inspection and mutation below
@@ -78,7 +106,7 @@ pub fn cleanup(update: bool) -> AnyResult {
     }
 
     let audits = branch_audits(&mut repo)?;
-    let selected = crate::git_cleanup_tui::select_branches(audits)?;
+    let selected = crate::git_branch_cleanup_tui::select_branches(audits)?;
     if selected.is_empty() {
         return Ok(());
     }
@@ -86,6 +114,26 @@ pub fn cleanup(update: bool) -> AnyResult {
     println!("Deleted {} local branches:", selected.len());
     for branch in selected {
         println!("  {branch}");
+    }
+    Ok(())
+}
+
+pub fn worktree_cleanup() -> AnyResult {
+    if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
+        bail!("interactive worktree selection requires a terminal");
+    }
+
+    let repo = discover_repository()?;
+    let audits = worktree_audits(&repo)?;
+    let selection = crate::git_worktree_cleanup_tui::select_worktrees(audits)?;
+    if selection.paths.is_empty() {
+        return Ok(());
+    }
+    remove_selected_worktrees(&repo, &selection.paths, selection.force)?;
+    let mode = if selection.force { " with force" } else { "" };
+    println!("Removed {} linked worktrees{mode}:", selection.paths.len());
+    for path in selection.paths {
+        println!("  {}", path.display());
     }
     Ok(())
 }
@@ -101,6 +149,198 @@ fn branch_audits(repo: &mut Repository) -> AnyResult<Vec<BranchAudit>> {
         .into_iter()
         .map(|branch| audit_branch(repo, branch, &bases, &base_local_names, &excludes))
         .collect()
+}
+
+fn worktree_audits(repo: &Repository) -> AnyResult<Vec<WorktreeAudit>> {
+    let current_path = repo.workdir().map(normalize_path).transpose()?;
+    let mut main_repo = repo
+        .main_repo()
+        .context("failed to open the main repository")?;
+    let main_path = main_repo
+        .workdir()
+        .map(normalize_path)
+        .transpose()?
+        .context("worktree cleanup requires a non-bare main repository")?;
+    let branch_audits = branch_audits(&mut main_repo)?
+        .into_iter()
+        .map(|audit| (audit.name.clone(), audit))
+        .collect::<HashMap<_, _>>();
+
+    let mut audits = vec![audit_worktree(
+        &main_repo,
+        main_path,
+        Some(WorktreeProtection::Main),
+        &branch_audits,
+    )?];
+    for proxy in main_repo.worktrees()? {
+        let path = proxy.base().with_context(|| {
+            format!(
+                "failed to read linked worktree path for {}",
+                proxy.id().to_str_lossy()
+            )
+        })?;
+        let locked_reason = proxy
+            .lock_reason()
+            .map(|reason| WorktreeProtection::Locked(reason.to_str_lossy().into_owned()));
+        let linked_repo = proxy
+            .into_repo_with_possibly_inaccessible_worktree()
+            .with_context(|| format!("failed to open linked worktree at {}", path.display()))?;
+        let is_current = current_path
+            .as_ref()
+            .is_some_and(|current| paths_match(current, &path));
+        let protected_reason = if is_current {
+            Some(WorktreeProtection::Current)
+        } else {
+            locked_reason
+        };
+        audits.push(audit_worktree(
+            &linked_repo,
+            path,
+            protected_reason,
+            &branch_audits,
+        )?);
+    }
+    audits.sort_by(|left, right| left.path.cmp(&right.path));
+    Ok(audits)
+}
+
+fn audit_worktree(
+    repo: &Repository,
+    path: PathBuf,
+    mut protection: Option<WorktreeProtection>,
+    branches: &HashMap<String, BranchAudit>,
+) -> AnyResult<WorktreeAudit> {
+    let exists = path.is_dir();
+    let dirty = exists && worktree_is_dirty(&path)?;
+    if dirty && protection.is_none() {
+        protection = Some(WorktreeProtection::Dirty);
+    }
+    let state = if !exists {
+        WorktreeState::Missing
+    } else if dirty {
+        WorktreeState::Dirty
+    } else {
+        WorktreeState::Clean
+    };
+    let branch = repo
+        .head_name()?
+        .map(|name| name.shorten().to_str_lossy().into_owned())
+        .unwrap_or_else(|| "(detached HEAD)".to_owned());
+    let commit = repo.head_commit().context("worktree HEAD is unborn")?;
+    let short_object = commit.short_id()?.to_string();
+    let subject = commit.message()?.title.to_str_lossy().trim().to_owned();
+    let branch_audit = branches.get(&branch);
+
+    Ok(WorktreeAudit {
+        path,
+        branch,
+        short_object,
+        state,
+        protection,
+        subject,
+        diff_base: branch_audit
+            .map(|audit| audit.diff_base.clone())
+            .unwrap_or_else(|| "base".to_owned()),
+        diffstat: branch_audit
+            .map(|audit| audit.diffstat.clone())
+            .unwrap_or_else(|| "detached HEAD; no branch audit available".to_owned()),
+        bases: branch_audit
+            .map(|audit| audit.bases.clone())
+            .unwrap_or_default(),
+    })
+}
+
+fn worktree_is_dirty(path: &Path) -> AnyResult<bool> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .output()
+        .with_context(|| format!("failed to inspect worktree at {}", path.display()))?;
+    if !output.status.success() {
+        bail!(
+            "git status failed for {} with {}: {}",
+            path.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(!output.stdout.is_empty())
+}
+
+fn remove_selected_worktrees(repo: &Repository, paths: &[PathBuf], force: bool) -> AnyResult {
+    let audits = worktree_audits(repo)?;
+    for path in paths {
+        let audit = audits
+            .iter()
+            .find(|audit| paths_match(&audit.path, path))
+            .with_context(|| {
+                format!(
+                    "linked worktree is no longer registered: {}",
+                    path.display()
+                )
+            })?;
+        if let Some(protection) = &audit.protection {
+            bail!(
+                "refusing to remove protected worktree {}: {}",
+                path.display(),
+                protection_description(protection)
+            );
+        }
+    }
+
+    let main_repo = repo
+        .main_repo()
+        .context("failed to open the main repository")?;
+    let main_path = main_repo
+        .workdir()
+        .context("worktree cleanup requires a non-bare main repository")?;
+    for path in paths {
+        let mut command = Command::new("git");
+        command
+            .arg("-C")
+            .arg(main_path)
+            .args(["worktree", "remove"]);
+        if force {
+            command.arg("--force");
+        }
+        let output = command
+            .arg("--")
+            .arg(path)
+            .output()
+            .with_context(|| format!("failed to remove worktree at {}", path.display()))?;
+        if !output.status.success() {
+            bail!(
+                "git worktree remove failed for {} with {}: {}",
+                path.display(),
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn protection_description(protection: &WorktreeProtection) -> String {
+    match protection {
+        WorktreeProtection::Main => "main worktree".to_owned(),
+        WorktreeProtection::Current => "current worktree".to_owned(),
+        WorktreeProtection::Locked(reason) if reason.is_empty() => "locked worktree".to_owned(),
+        WorktreeProtection::Locked(reason) => format!("locked worktree: {reason}"),
+        WorktreeProtection::Dirty => "worktree has local changes".to_owned(),
+    }
+}
+
+fn normalize_path(path: &Path) -> AnyResult<PathBuf> {
+    path.canonicalize()
+        .with_context(|| format!("failed to resolve worktree path {}", path.display()))
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
 }
 
 fn resolve_audit_bases(repo: &Repository) -> AnyResult<Vec<Base>> {
@@ -670,5 +910,256 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn audits_worktree_safety_before_allowing_removal() {
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        let clean = root.path().join("clean");
+        let dirty = root.path().join("dirty");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "--quiet", "--initial-branch=main"]);
+        git(&main, &["config", "user.name", "Test User"]);
+        git(&main, &["config", "user.email", "test@example.com"]);
+        fs::write(main.join("file.txt"), "base\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "--quiet", "-m", "base"]);
+        git(&main, &["branch", "clean"]);
+        git(&main, &["branch", "dirty"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                clean.to_str().unwrap(),
+                "clean",
+            ],
+        );
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                dirty.to_str().unwrap(),
+                "dirty",
+            ],
+        );
+        fs::write(dirty.join("file.txt"), "changed\n").unwrap();
+
+        let repo = gix::open(&main).unwrap();
+        let audits = worktree_audits(&repo).unwrap();
+        let main_audit = audits
+            .iter()
+            .find(|audit| paths_match(&audit.path, &main))
+            .unwrap();
+        let clean_audit = audits
+            .iter()
+            .find(|audit| paths_match(&audit.path, &clean))
+            .unwrap();
+        let dirty_audit = audits
+            .iter()
+            .find(|audit| paths_match(&audit.path, &dirty))
+            .unwrap();
+
+        assert_eq!(main_audit.protection, Some(WorktreeProtection::Main));
+        assert_eq!(clean_audit.state, WorktreeState::Clean);
+        assert!(clean_audit.protection.is_none());
+        assert_eq!(dirty_audit.state, WorktreeState::Dirty);
+        assert_eq!(dirty_audit.protection, Some(WorktreeProtection::Dirty));
+
+        let error =
+            remove_selected_worktrees(&repo, std::slice::from_ref(&dirty), true).unwrap_err();
+        assert!(error.to_string().contains("worktree has local changes"));
+        assert!(dirty.exists());
+
+        git(
+            &main,
+            &[
+                "worktree",
+                "lock",
+                "--reason",
+                "keep",
+                clean.to_str().unwrap(),
+            ],
+        );
+        let audits = worktree_audits(&repo).unwrap();
+        let clean_audit = audits
+            .iter()
+            .find(|audit| paths_match(&audit.path, &clean))
+            .unwrap();
+        assert_eq!(
+            clean_audit.protection,
+            Some(WorktreeProtection::Locked("keep".to_owned()))
+        );
+    }
+
+    #[test]
+    fn removes_a_clean_linked_worktree_but_preserves_its_branch() {
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        let linked = root.path().join("topic");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "--quiet", "--initial-branch=main"]);
+        git(&main, &["config", "user.name", "Test User"]);
+        git(&main, &["config", "user.email", "test@example.com"]);
+        fs::write(main.join("file.txt"), "base\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "--quiet", "-m", "base"]);
+        git(&main, &["branch", "topic"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked.to_str().unwrap(),
+                "topic",
+            ],
+        );
+
+        let repo = gix::open(&main).unwrap();
+        remove_selected_worktrees(&repo, std::slice::from_ref(&linked), false).unwrap();
+
+        assert!(!linked.exists());
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert!(
+            repo.try_find_reference("refs/heads/topic")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn refuses_to_remove_the_main_worktree_if_its_path_is_injected() {
+        let root = repository();
+        let repo = gix::open(root.path()).unwrap();
+
+        let error = remove_selected_worktrees(
+            &repo,
+            std::slice::from_ref(&root.path().canonicalize().unwrap()),
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("main worktree"));
+        assert!(root.path().join(".git").is_dir());
+    }
+
+    #[test]
+    fn removes_registration_for_a_missing_linked_worktree() {
+        let root = tempfile::tempdir().unwrap();
+        let main = root.path().join("main");
+        let linked = root.path().join("topic");
+        let moved = root.path().join("topic-moved");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "--quiet", "--initial-branch=main"]);
+        git(&main, &["config", "user.name", "Test User"]);
+        git(&main, &["config", "user.email", "test@example.com"]);
+        fs::write(main.join("file.txt"), "base\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "--quiet", "-m", "base"]);
+        git(&main, &["branch", "topic"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked.to_str().unwrap(),
+                "topic",
+            ],
+        );
+        fs::rename(&linked, &moved).unwrap();
+
+        let repo = gix::open(&main).unwrap();
+        let audits = worktree_audits(&repo).unwrap();
+        let linked_audit = audits
+            .iter()
+            .find(|audit| audit.state == WorktreeState::Missing)
+            .unwrap();
+        assert!(linked_audit.protection.is_none());
+        let registered_path = linked_audit.path.clone();
+
+        remove_selected_worktrees(&repo, std::slice::from_ref(&registered_path), false).unwrap();
+
+        assert!(moved.exists());
+        assert!(repo.worktrees().unwrap().is_empty());
+        assert!(
+            repo.try_find_reference("refs/heads/topic")
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn removes_a_clean_linked_worktree_containing_an_initialized_submodule() {
+        let root = tempfile::tempdir().unwrap();
+        let submodule = root.path().join("submodule");
+        let main = root.path().join("main");
+        let linked = root.path().join("topic");
+        fs::create_dir(&submodule).unwrap();
+        fs::create_dir(&main).unwrap();
+
+        git(&submodule, &["init", "--quiet", "--initial-branch=main"]);
+        git(&submodule, &["config", "user.name", "Test User"]);
+        git(&submodule, &["config", "user.email", "test@example.com"]);
+        fs::write(submodule.join("file.txt"), "submodule\n").unwrap();
+        git(&submodule, &["add", "file.txt"]);
+        git(&submodule, &["commit", "--quiet", "-m", "base"]);
+
+        git(&main, &["init", "--quiet", "--initial-branch=main"]);
+        git(&main, &["config", "user.name", "Test User"]);
+        git(&main, &["config", "user.email", "test@example.com"]);
+        fs::write(main.join("file.txt"), "base\n").unwrap();
+        git(&main, &["add", "file.txt"]);
+        git(&main, &["commit", "--quiet", "-m", "base"]);
+        git(
+            &main,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "add",
+                "--quiet",
+                submodule.to_str().unwrap(),
+                "dependency",
+            ],
+        );
+        git(&main, &["commit", "--quiet", "-am", "add submodule"]);
+        git(&main, &["branch", "topic"]);
+        git(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                linked.to_str().unwrap(),
+                "topic",
+            ],
+        );
+        git(
+            &linked,
+            &[
+                "-c",
+                "protocol.file.allow=always",
+                "submodule",
+                "update",
+                "--init",
+                "--recursive",
+            ],
+        );
+
+        let repo = gix::open(&main).unwrap();
+        let error =
+            remove_selected_worktrees(&repo, std::slice::from_ref(&linked), false).unwrap_err();
+        assert!(error.to_string().contains("containing submodules"));
+        assert!(linked.exists());
+
+        remove_selected_worktrees(&repo, std::slice::from_ref(&linked), true).unwrap();
+
+        assert!(!linked.exists());
     }
 }

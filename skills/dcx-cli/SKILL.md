@@ -1,6 +1,6 @@
 ---
 name: dcx-cli
-description: 使用 dcx CLI 处理 UTF-8 文本、执行无序去重、查看 JWT，以及审计并清理本地 Git branch 或 Cargo target 构建缓存。适用于用户要求文本原地排序、无需预排序的行去重或计数、查看 JWT header/claims、清理本地 branch、管理 git cleanup exclude 规则、清理已卸载 rustc toolchain 产生的 artifact 或陈旧 incremental cache、安装动态 shell 补全，或管理 dcx 自带 skill 的场景。
+description: 使用 dcx CLI 处理 UTF-8 文本、执行无序去重、查看 JWT，以及审计并清理本地 Git branch、linked worktree 或 Cargo target 构建缓存。适用于用户要求文本原地排序、无需预排序的行去重或计数、查看 JWT header/claims、清理本地 branch 或 worktree、管理 branch cleanup exclude 规则、清理已卸载 rustc toolchain 产生的 artifact 或陈旧 incremental cache、安装动态 shell 补全，或管理 dcx 自带 skill 的场景。
 ---
 
 # dcx CLI
@@ -20,14 +20,22 @@ description: 使用 dcx CLI 处理 UTF-8 文本、执行无序去重、查看 JW
 
 ## Git branch 清理
 
-- 使用 `dcx git cleanup` 打开交互式 TUI，由用户审计并明确选择要删除的 branch。
+- 使用 `dcx git branch cleanup` 打开交互式 TUI，由用户审计并明确选择要删除的 branch。
 - 界面默认展示全部本地 branch，并以中文独立标明 upstream 为正常、丢失或未设置；用户可切换为只看 upstream gone。
 - 合并判断、ahead/behind、提交信息与 diff 统计仅作为审计信息，不能代替用户选择。
 - 当前 branch、正在任意 worktree 使用、属于远端默认 base 或匹配 exclude 规则的 branch 会被硬保护，无法选择。
 - 选择完成后还会显示最终确认清单；不要代替用户操作 TUI 或绕过确认。
 - 本地仓库审计和 branch 删除由 `gix` 在进程内串行完成，不需要启动 Git 子进程。
 - 只有用户要求刷新远端 refs 时才使用 `--update`；该显式网络选项仍会执行 `git fetch --all --prune`。
-- 使用 `dcx git cleanup exclude add|remove|list` 管理 repository-local 排除规则，不直接编辑 Git common directory 中的配置文件。
+- 使用 `dcx git branch cleanup exclude add|remove|list` 管理 repository-local 排除规则，不直接编辑 Git common directory 中的配置文件。
+
+## Git worktree 清理
+
+- 使用 `dcx git worktree cleanup` 打开交互式 TUI，由用户审计并明确选择要删除的 linked worktree。
+- main worktree、当前 worktree、通过 Git 锁定或存在本地改动的 worktree 会被硬保护，无法选择；路径已丢失的注册信息可以选择清理。
+- 选择完成后还会显示最终确认清单；不要代替用户操作 TUI 或绕过确认。
+- 默认删除不使用 `--force`；如果 Git 因 worktree 包含已初始化 submodule 而拒绝删除，用户可在 TUI 中勾选强制删除。强制模式不会绕过 main、当前、locked 或 dirty worktree 的硬保护。
+- 删除只影响 worktree 目录与注册信息；对应 local branch 会保留，需要时再用 branch cleanup 独立审计。
 
 ## Cargo target 缓存清理
 

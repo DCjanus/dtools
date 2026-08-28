@@ -10,7 +10,8 @@ pub mod cargo;
 mod cargo_cleanup_tui;
 pub mod completion;
 pub mod git;
-mod git_cleanup_tui;
+mod git_branch_cleanup_tui;
+mod git_worktree_cleanup_tui;
 pub mod jwt;
 pub mod skill;
 

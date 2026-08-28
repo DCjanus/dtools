@@ -81,9 +81,32 @@ enum Commands {
 
 #[derive(Debug, Subcommand)]
 enum GitCommands {
-    /// 在交互式 TUI 中审计并批量删除本地分支。
+    /// 管理本地 branch。
+    #[command(about = "Manage local branches")]
+    Branch {
+        #[command(subcommand)]
+        subcommand: BranchCommands,
+    },
+    /// 管理 linked worktree。
+    #[command(about = "Manage linked worktrees")]
+    Worktree {
+        #[command(subcommand)]
+        subcommand: WorktreeCommands,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum BranchCommands {
+    /// 在交互式 TUI 中审计并批量删除本地 branch。
     #[command(about = "Audit and delete local branches in an interactive TUI")]
-    Cleanup(CleanupArguments),
+    Cleanup(BranchCleanupArguments),
+}
+
+#[derive(Debug, Subcommand)]
+enum WorktreeCommands {
+    /// 在交互式 TUI 中审计并删除 linked worktree。
+    #[command(about = "Audit and remove linked worktrees in an interactive TUI")]
+    Cleanup,
 }
 
 #[derive(Debug, Subcommand)]
@@ -109,12 +132,12 @@ enum JwtCommands {
 }
 
 #[derive(Debug, Args)]
-struct CleanupArguments {
+struct BranchCleanupArguments {
     /// 删除前更新并 prune 远端 refs
     #[arg(long, help = "Fetch and prune all remotes before checking branches")]
     update: bool,
     #[command(subcommand)]
-    subcommand: Option<CleanupCommands>,
+    subcommand: Option<BranchCleanupCommands>,
 }
 
 #[derive(Debug, Args)]
@@ -145,7 +168,7 @@ struct CargoCleanupArguments {
 }
 
 #[derive(Debug, Subcommand)]
-enum CleanupCommands {
+enum BranchCleanupCommands {
     /// 管理当前仓库的持久化 exclude 规则。
     #[command(about = "Manage repository-local branch exclusion rules")]
     Exclude {
@@ -226,15 +249,24 @@ fn main() -> AnyResult {
             Ok(())
         }
         Commands::Git {
-            subcommand: GitCommands::Cleanup(arguments),
+            subcommand:
+                GitCommands::Branch {
+                    subcommand: BranchCommands::Cleanup(arguments),
+                },
         } => match arguments.subcommand {
-            Some(CleanupCommands::Exclude { subcommand }) => match subcommand {
+            Some(BranchCleanupCommands::Exclude { subcommand }) => match subcommand {
                 ExcludeCommands::Add { patterns, current } => git::exclude_add(&patterns, current),
                 ExcludeCommands::Remove { patterns } => git::exclude_remove(&patterns),
                 ExcludeCommands::List => git::exclude_list(),
             },
-            None => git::cleanup(arguments.update),
+            None => git::branch_cleanup(arguments.update),
         },
+        Commands::Git {
+            subcommand:
+                GitCommands::Worktree {
+                    subcommand: WorktreeCommands::Cleanup,
+                },
+        } => git::worktree_cleanup(),
         Commands::Cargo {
             subcommand: CargoCommands::Cleanup(arguments),
         } => cargo::cleanup(arguments.days, arguments.dry_run, arguments.yes),
