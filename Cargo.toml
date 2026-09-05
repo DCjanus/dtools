@@ -7,7 +7,6 @@ default-run = "dcx"
 description = "用于处理文本、维护 Git 仓库和辅助 Coding Agent 的小型命令行工具集"
 repository = "https://github.com/DCjanus/dcx"
 license = "MIT"
-readme = "README.md"
 keywords = ["cli", "git", "sort", "text", "uniq"]
 categories = ["command-line-utilities", "text-processing"]
 
