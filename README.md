@@ -1,5 +1,9 @@
 # dcx
 
+[![CI](https://github.com/DCjanus/dcx/actions/workflows/ci.yml/badge.svg?event=pull_request)](https://github.com/DCjanus/dcx/actions/workflows/ci.yml)
+[![依赖状态](https://deps.rs/repo/github/DCjanus/dcx/status.svg)](https://deps.rs/repo/github/DCjanus/dcx)
+[![许可证](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 `dcx` 是一组用于处理 UTF-8 文本、维护 Git 仓库和辅助 Coding Agent 的小型命令行工具。
 
 名称保持为三个字符，便于在 QWERTY 键盘上仅用左手快速输入。
